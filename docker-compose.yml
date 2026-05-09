@@ -109,8 +109,6 @@ services:
       DATABASE_URL: postgresql://livepass:livepass@booking-postgres:5432/livepass_bookings
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
       BOOKING_QUEUE: booking.requested
-      BOOKING_CONFIRMED_QUEUE: booking.confirmed
-      BOOKING_REJECTED_QUEUE: booking.rejected
       EVENT_SERVICE_URL: http://event-service:8000
     depends_on:
       booking-postgres:

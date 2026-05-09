@@ -12,7 +12,7 @@ from app.event_client import EventServiceClient
 from app.models import BookingStatus
 from app.rabbitmq import consumer
 from app.schemas import BookingRequested
-from app.service import booking_event_payload, persist_booking
+from app.service import persist_booking
 
 
 logging.basicConfig(
@@ -34,26 +34,6 @@ event_service = EventServiceClient(
 def decode_message(message: AbstractIncomingMessage) -> BookingRequested:
     payload: Any = json.loads(message.body.decode("utf-8"))
     return BookingRequested.model_validate(payload)
-
-
-async def publish_outcome_event(routing_key: str, payload: dict[str, Any]) -> None:
-    for attempt in range(1, settings.event_service_retry_attempts + 1):
-        try:
-            await consumer.publish_event(routing_key, payload)
-            return
-        except Exception as exc:
-            logger.warning(
-                "booking_outcome_publish_failed",
-                extra={
-                    "routing_key": routing_key,
-                    "attempt": attempt,
-                    "max_attempts": settings.event_service_retry_attempts,
-                    "error": str(exc),
-                },
-            )
-            if attempt == settings.event_service_retry_attempts:
-                raise
-            await asyncio.sleep(settings.event_service_retry_backoff_seconds * attempt)
 
 
 async def handle_message(message: AbstractIncomingMessage) -> None:
@@ -91,8 +71,6 @@ async def handle_message(message: AbstractIncomingMessage) -> None:
                 BookingStatus.CONFIRMED,
                 reservation.total_price or 0.0,
             )
-            routing_key = settings.booking_confirmed_queue
-            outcome_payload = booking_event_payload(booking, booking_request)
             logger.info(
                 "booking_confirmed",
                 extra={
@@ -108,12 +86,6 @@ async def handle_message(message: AbstractIncomingMessage) -> None:
                 booking_request,
                 BookingStatus.FAILED,
                 0.0,
-            )
-            routing_key = settings.booking_rejected_queue
-            outcome_payload = booking_event_payload(
-                booking,
-                booking_request,
-                reservation.reason,
             )
             logger.info(
                 "booking_rejected",
@@ -132,18 +104,6 @@ async def handle_message(message: AbstractIncomingMessage) -> None:
         return
     finally:
         db.close()
-
-    try:
-        await publish_outcome_event(routing_key, outcome_payload)
-    except Exception as exc:
-        logger.exception(
-            "booking_outcome_publish_exhausted",
-            extra={
-                "booking_id": outcome_payload["booking_id"],
-                "routing_key": routing_key,
-                "error": str(exc),
-            },
-        )
 
     await message.ack()
 

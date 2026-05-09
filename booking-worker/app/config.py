@@ -10,8 +10,6 @@ class Settings(BaseSettings):
     database_url: str
     rabbitmq_url: str = "amqp://guest:guest@rabbitmq:5672/"
     booking_queue: str = "booking.requested"
-    booking_confirmed_queue: str = "booking.confirmed"
-    booking_rejected_queue: str = "booking.rejected"
     event_service_url: str = "http://event-service:8000"
     event_service_timeout_seconds: float = 5.0
     event_service_retry_attempts: int = 3
