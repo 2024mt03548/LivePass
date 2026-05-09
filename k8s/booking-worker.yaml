@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: booking-worker
+  labels:
+    app: booking-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: booking-worker
+  template:
+    metadata:
+      labels:
+        app: booking-worker
+    spec:
+      containers:
+        - name: booking-worker
+          image: livepass/booking-worker:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: SERVICE_NAME
+              value: LivePass Booking Worker
+            - name: ENVIRONMENT
+              value: development
+            - name: DATABASE_URL
+              value: postgresql://livepass:livepass@postgres:5432/livepass_events
+            - name: REDIS_URL
+              value: redis://redis:6379/0
+            - name: RABBITMQ_URL
+              value: amqp://guest:guest@rabbitmq:5672/
+            - name: BOOKING_QUEUE
+              value: booking_queue

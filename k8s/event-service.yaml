@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: event-service
+  labels:
+    app: event-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: event-service
+  template:
+    metadata:
+      labels:
+        app: event-service
+    spec:
+      containers:
+        - name: event-service
+          image: livepass/event-service:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: APP_NAME
+              value: LivePass Event Service
+            - name: ENVIRONMENT
+              value: development
+            - name: DEBUG
+              value: "false"
+            - name: DATABASE_URL
+              value: postgresql://livepass:livepass@postgres:5432/livepass_events
+            - name: REDIS_URL
+              value: redis://redis:6379/0
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: event-service
+  labels:
+    app: event-service
+spec:
+  type: ClusterIP
+  selector:
+    app: event-service
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
