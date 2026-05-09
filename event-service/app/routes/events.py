@@ -1,13 +1,13 @@
 import json
 
 import redis.asyncio as redis
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.db import get_db
 from app.models import Event
-from app.schemas import EventCreate, EventResponse, EventUpdate
+from app.schemas import EventResponse
 
 
 router = APIRouter(prefix="/events", tags=["events"])
@@ -28,17 +28,6 @@ async def invalidate_event_cache(event_id: int | None = None) -> None:
     if event_id is not None:
         keys.append(EVENT_DETAIL_CACHE_KEY.format(event_id=event_id))
     await redis_client.delete(*keys)
-
-
-@router.post("", response_model=EventResponse, status_code=status.HTTP_201_CREATED)
-async def create_event(event_in: EventCreate, db: Session = Depends(get_db)) -> Event:
-    event = Event(**event_in.model_dump())
-    db.add(event)
-    db.commit()
-    db.refresh(event)
-
-    await invalidate_event_cache(event.id)
-    return event
 
 
 @router.get("", response_model=list[EventResponse])
@@ -71,43 +60,3 @@ async def get_event(event_id: int, db: Session = Depends(get_db)) -> dict:
     payload = serialize_event(event)
     await redis_client.setex(cache_key, CACHE_TTL_SECONDS, json.dumps(payload))
     return payload
-
-
-@router.put("/{event_id}", response_model=EventResponse)
-async def update_event(
-    event_id: int,
-    event_in: EventUpdate,
-    db: Session = Depends(get_db),
-) -> Event:
-    event = db.get(Event, event_id)
-    if not event:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Event not found",
-        )
-
-    update_data = event_in.model_dump(exclude_unset=True)
-    for field, value in update_data.items():
-        setattr(event, field, value)
-
-    db.commit()
-    db.refresh(event)
-
-    await invalidate_event_cache(event.id)
-    return event
-
-
-@router.delete("/{event_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_event(event_id: int, db: Session = Depends(get_db)) -> Response:
-    event = db.get(Event, event_id)
-    if not event:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Event not found",
-        )
-
-    db.delete(event)
-    db.commit()
-
-    await invalidate_event_cache(event_id)
-    return Response(status_code=status.HTTP_204_NO_CONTENT)

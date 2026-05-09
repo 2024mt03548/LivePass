@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from app.config import get_settings
 from app.db import Base, engine
 from app.routes.events import router as events_router
+from app.routes.internal_events import router as internal_events_router
 from app.routes.inventory import router as inventory_router
 
 
@@ -25,4 +26,5 @@ def health_check() -> dict[str, str]:
 
 
 app.include_router(events_router)
+app.include_router(internal_events_router)
 app.include_router(inventory_router)

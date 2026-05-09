@@ -42,7 +42,7 @@ booking-worker ---- PostgreSQL
 
 | Service | Responsibility | Local Port |
 | --- | --- | --- |
-| `event-service` | Event CRUD API, PostgreSQL access, Redis caching for event reads | `8001` |
+| `event-service` | Public event read API, internal event management and inventory APIs, PostgreSQL access, Redis caching for event reads | `8001` |
 | `booking-service` | Booking request API, event validation, RabbitMQ producer | `8002` |
 | `booking-worker` | RabbitMQ consumer, transactional booking creation, seat updates, cache invalidation | none |
 | `postgres` | Stores events and bookings | `5432` |
@@ -233,10 +233,10 @@ kubectl get pods -l app=booking-worker
 
 ## Sample API Requests
 
-Create an event:
+Create an event internally:
 
 ```bash
-curl -X POST http://localhost:8001/events \
+curl -X POST http://localhost:8001/internal/events \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Cloud Native Summit",
@@ -260,10 +260,10 @@ Get event by ID:
 curl http://localhost:8001/events/1
 ```
 
-Update an event:
+Update an event internally:
 
 ```bash
-curl -X PUT http://localhost:8001/events/1 \
+curl -X PUT http://localhost:8001/internal/events/1 \
   -H "Content-Type: application/json" \
   -d '{
     "venue": "Conference Hall A",
@@ -271,10 +271,10 @@ curl -X PUT http://localhost:8001/events/1 \
   }'
 ```
 
-Delete an event:
+Delete an event internally:
 
 ```bash
-curl -X DELETE http://localhost:8001/events/1
+curl -X DELETE http://localhost:8001/internal/events/1
 ```
 
 Create a booking request:
