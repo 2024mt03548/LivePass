@@ -51,10 +51,10 @@ metadata:
   labels:
     app: event-service
 spec:
-  type: ClusterIP
+  type: NodePort
   selector:
     app: event-service
   ports:
-    - name: http
-      port: 8000
-      targetPort: 8000
+  - port: 8000
+    targetPort: 8000
+    nodePort: 30081
