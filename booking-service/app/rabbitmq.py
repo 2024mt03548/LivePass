@@ -31,7 +31,7 @@ class RabbitMQProducer:
             raise RuntimeError("RabbitMQ channel is not available")
 
         message = Message(
-            body=json.dumps(booking.model_dump()).encode("utf-8"),
+            body=json.dumps(booking.model_dump(mode="json")).encode("utf-8"),
             content_type="application/json",
             delivery_mode=DeliveryMode.PERSISTENT,
         )

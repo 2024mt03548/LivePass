@@ -1,18 +1,18 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: postgres
+  name: event-postgres
   labels:
-    app: postgres
+    app: event-postgres
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: postgres
+      app: event-postgres
   template:
     metadata:
       labels:
-        app: postgres
+        app: event-postgres
     spec:
       containers:
         - name: postgres
@@ -30,13 +30,57 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: postgres
+  name: event-postgres
   labels:
-    app: postgres
+    app: event-postgres
 spec:
   type: ClusterIP
   selector:
-    app: postgres
+    app: event-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: booking-postgres
+  labels:
+    app: booking-postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: booking-postgres
+  template:
+    metadata:
+      labels:
+        app: booking-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: livepass
+            - name: POSTGRES_PASSWORD
+              value: livepass
+            - name: POSTGRES_DB
+              value: livepass_bookings
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: booking-postgres
+  labels:
+    app: booking-postgres
+spec:
+  type: ClusterIP
+  selector:
+    app: booking-postgres
   ports:
     - name: postgres
       port: 5432

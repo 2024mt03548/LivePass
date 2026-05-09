@@ -1,7 +1,7 @@
 services:
-  postgres:
+  event-postgres:
     image: postgres:16-alpine
-    container_name: livepass-postgres
+    container_name: livepass-event-postgres
     environment:
       POSTGRES_USER: livepass
       POSTGRES_PASSWORD: livepass
@@ -9,10 +9,28 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./db/init:/docker-entrypoint-initdb.d:ro
+      - event_postgres_data:/var/lib/postgresql/data
+      - ./db/event-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U livepass -d livepass_events" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  booking-postgres:
+    image: postgres:16-alpine
+    container_name: livepass-booking-postgres
+    environment:
+      POSTGRES_USER: livepass
+      POSTGRES_PASSWORD: livepass
+      POSTGRES_DB: livepass_bookings
+    ports:
+      - "5433:5432"
+    volumes:
+      - booking_postgres_data:/var/lib/postgresql/data
+      - ./db/booking-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U livepass -d livepass_bookings" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -52,12 +70,12 @@ services:
       APP_NAME: LivePass Event Service
       ENVIRONMENT: development
       DEBUG: "true"
-      DATABASE_URL: postgresql://livepass:livepass@postgres:5432/livepass_events
+      DATABASE_URL: postgresql://livepass:livepass@event-postgres:5432/livepass_events
       REDIS_URL: redis://redis:6379/0
     ports:
       - "8001:8000"
     depends_on:
-      postgres:
+      event-postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -72,7 +90,7 @@ services:
       DEBUG: "true"
       EVENT_SERVICE_URL: http://event-service:8000
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
-      BOOKING_QUEUE: booking_queue
+      BOOKING_QUEUE: booking.requested
     ports:
       - "8002:8000"
     depends_on:
@@ -88,19 +106,22 @@ services:
     environment:
       SERVICE_NAME: LivePass Booking Worker
       ENVIRONMENT: development
-      DATABASE_URL: postgresql://livepass:livepass@postgres:5432/livepass_events
+      DATABASE_URL: postgresql://livepass:livepass@booking-postgres:5432/livepass_bookings
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
-      BOOKING_QUEUE: booking_queue
-      REDIS_URL: redis://redis:6379/0
+      BOOKING_QUEUE: booking.requested
+      BOOKING_CONFIRMED_QUEUE: booking.confirmed
+      BOOKING_REJECTED_QUEUE: booking.rejected
+      EVENT_SERVICE_URL: http://event-service:8000
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
+      booking-postgres:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      event-service:
+        condition: service_started
 
 volumes:
-  postgres_data:
+  event_postgres_data:
+  booking_postgres_data:
   redis_data:
   rabbitmq_data:

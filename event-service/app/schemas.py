@@ -32,3 +32,15 @@ class EventResponse(EventBase):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class InventoryReserveRequest(BaseModel):
+    event_id: int = Field(..., gt=0)
+    tickets: int = Field(..., gt=0)
+
+
+class InventoryReserveResponse(BaseModel):
+    success: bool
+    reason: str | None = None
+    unit_price: float | None = None
+    total_price: float | None = None

@@ -1,6 +1,4 @@
-- analyze -> need of individual dbs and read replicas.
-  -- lets rebuild to have the services thier own dbs, and lets then put queues in between comms for these services as well.  
-
+- create a endpoint to check bookings for a user.
 
 - k8 config and setup
 - testing strategy 

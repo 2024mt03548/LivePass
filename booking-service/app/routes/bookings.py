@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, status
 
 from app.rabbitmq import RabbitMQProducer, producer
 from app.schemas import BookingAcceptedResponse, BookingMessage, BookingRequest
@@ -26,26 +28,14 @@ async def create_booking(
     events: EventClient = Depends(get_event_client),
     queue: RabbitMQProducer = Depends(get_rabbitmq_producer),
 ) -> BookingAcceptedResponse:
-    event = await events.get_event(booking_in.event_id)
-
-    if event.status != "active":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Event is not active",
-        )
-
-    if event.available_seats < booking_in.tickets:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Not enough seats available",
-        )
+    await events.ensure_reachable()
 
     booking_message = BookingMessage(
         user_id=booking_in.user_id,
         event_id=booking_in.event_id,
         tickets=booking_in.tickets,
-        total_price=event.price * booking_in.tickets,
+        requested_at=datetime.now(timezone.utc),
     )
     await queue.publish_booking(booking_message)
 
-    return BookingAcceptedResponse(message="Booking request accepted")
+    return BookingAcceptedResponse(message="Booking request accepted for processing")

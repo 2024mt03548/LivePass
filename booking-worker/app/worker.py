@@ -3,16 +3,16 @@ import json
 import logging
 from typing import Any
 
-import redis.asyncio as redis
 from aio_pika.abc import AbstractIncomingMessage
-from pydantic import BaseModel, Field, ValidationError
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from pydantic import ValidationError
 
 from app.config import get_settings
 from app.db import Base, SessionLocal, engine
-from app.models import Booking, BookingStatus, Event, EventStatus
+from app.event_client import EventServiceClient
+from app.models import BookingStatus
 from app.rabbitmq import consumer
+from app.schemas import BookingRequested
+from app.service import booking_event_payload, persist_booking
 
 
 logging.basicConfig(
@@ -21,115 +21,143 @@ logging.basicConfig(
 )
 logger = logging.getLogger("booking-worker")
 settings = get_settings()
-redis_client = redis.from_url(settings.redis_url, decode_responses=True)
-
-EVENTS_LIST_CACHE_KEY = "events:list"
-EVENT_DETAIL_CACHE_KEY = "event:{event_id}"
 
 
-class BookingMessage(BaseModel):
-    user_id: int = Field(..., gt=0)
-    event_id: int = Field(..., gt=0)
-    tickets: int = Field(..., gt=0)
-    total_price: float = Field(..., ge=0)
+event_service = EventServiceClient(
+    base_url=settings.event_service_url,
+    timeout_seconds=settings.event_service_timeout_seconds,
+    retry_attempts=settings.event_service_retry_attempts,
+    retry_backoff_seconds=settings.event_service_retry_backoff_seconds,
+)
 
 
-class BookingProcessingError(Exception):
-    pass
-
-
-async def invalidate_event_cache(event_id: int) -> None:
-    await redis_client.delete(
-        EVENTS_LIST_CACHE_KEY,
-        EVENT_DETAIL_CACHE_KEY.format(event_id=event_id),
-    )
-
-
-def decode_message(message: AbstractIncomingMessage) -> BookingMessage:
+def decode_message(message: AbstractIncomingMessage) -> BookingRequested:
     payload: Any = json.loads(message.body.decode("utf-8"))
-    return BookingMessage.model_validate(payload)
+    return BookingRequested.model_validate(payload)
 
 
-def process_booking_transaction(db: Session, booking_message: BookingMessage) -> None:
-    with db.begin():
-        statement = (
-            select(Event)
-            .where(Event.id == booking_message.event_id)
-            .with_for_update()
-        )
-        event = db.execute(statement).scalar_one_or_none()
-
-        if event is None:
-            raise BookingProcessingError(
-                f"Event {booking_message.event_id} does not exist"
+async def publish_outcome_event(routing_key: str, payload: dict[str, Any]) -> None:
+    for attempt in range(1, settings.event_service_retry_attempts + 1):
+        try:
+            await consumer.publish_event(routing_key, payload)
+            return
+        except Exception as exc:
+            logger.warning(
+                "booking_outcome_publish_failed",
+                extra={
+                    "routing_key": routing_key,
+                    "attempt": attempt,
+                    "max_attempts": settings.event_service_retry_attempts,
+                    "error": str(exc),
+                },
             )
-
-        if event.status != EventStatus.ACTIVE:
-            raise BookingProcessingError(
-                f"Event {booking_message.event_id} is not active"
-            )
-
-        if event.available_seats < booking_message.tickets:
-            raise BookingProcessingError(
-                f"Event {booking_message.event_id} does not have enough seats"
-            )
-
-        booking = Booking(
-            user_id=booking_message.user_id,
-            event_id=booking_message.event_id,
-            tickets=booking_message.tickets,
-            total_price=booking_message.total_price,
-            status=BookingStatus.CONFIRMED,
-        )
-        db.add(booking)
-        event.available_seats -= booking_message.tickets
-
-        if event.available_seats == 0:
-            event.status = EventStatus.SOLD_OUT
+            if attempt == settings.event_service_retry_attempts:
+                raise
+            await asyncio.sleep(settings.event_service_retry_backoff_seconds * attempt)
 
 
 async def handle_message(message: AbstractIncomingMessage) -> None:
     try:
-        booking_message = decode_message(message)
+        booking_request = decode_message(message)
     except (json.JSONDecodeError, UnicodeDecodeError, ValidationError) as exc:
-        logger.warning("Discarding invalid booking message: %s", exc)
+        logger.warning("discarding_invalid_booking_request", extra={"error": str(exc)})
         await message.ack()
+        return
+
+    try:
+        reservation = await event_service.reserve_inventory(
+            event_id=booking_request.event_id,
+            tickets=booking_request.tickets,
+        )
+    except Exception as exc:
+        logger.exception(
+            "reservation_unavailable",
+            extra={
+                "user_id": booking_request.user_id,
+                "event_id": booking_request.event_id,
+                "tickets": booking_request.tickets,
+                "error": str(exc),
+            },
+        )
+        await message.nack(requeue=True)
         return
 
     db = SessionLocal()
     try:
-        process_booking_transaction(db, booking_message)
-    except BookingProcessingError as exc:
-        logger.warning("Booking rejected: %s", exc)
-        await message.ack()
-    except Exception:
+        if reservation.success:
+            booking = persist_booking(
+                db,
+                booking_request,
+                BookingStatus.CONFIRMED,
+                reservation.total_price or 0.0,
+            )
+            routing_key = settings.booking_confirmed_queue
+            outcome_payload = booking_event_payload(booking, booking_request)
+            logger.info(
+                "booking_confirmed",
+                extra={
+                    "booking_id": booking.id,
+                    "user_id": booking.user_id,
+                    "event_id": booking.event_id,
+                    "tickets": booking.tickets,
+                },
+            )
+        else:
+            booking = persist_booking(
+                db,
+                booking_request,
+                BookingStatus.FAILED,
+                0.0,
+            )
+            routing_key = settings.booking_rejected_queue
+            outcome_payload = booking_event_payload(
+                booking,
+                booking_request,
+                reservation.reason,
+            )
+            logger.info(
+                "booking_rejected",
+                extra={
+                    "booking_id": booking.id,
+                    "user_id": booking.user_id,
+                    "event_id": booking.event_id,
+                    "tickets": booking.tickets,
+                    "reason": reservation.reason,
+                },
+            )
+    except Exception as exc:
         db.rollback()
-        logger.exception("Unexpected booking processing failure")
+        logger.exception("booking_persistence_failed", extra={"error": str(exc)})
         await message.nack(requeue=True)
-    else:
-        await invalidate_event_cache(booking_message.event_id)
-        logger.info(
-            "Booking confirmed for user_id=%s event_id=%s tickets=%s",
-            booking_message.user_id,
-            booking_message.event_id,
-            booking_message.tickets,
-        )
-        await message.ack()
+        return
     finally:
         db.close()
+
+    try:
+        await publish_outcome_event(routing_key, outcome_payload)
+    except Exception as exc:
+        logger.exception(
+            "booking_outcome_publish_exhausted",
+            extra={
+                "booking_id": outcome_payload["booking_id"],
+                "routing_key": routing_key,
+                "error": str(exc),
+            },
+        )
+
+    await message.ack()
 
 
 async def main() -> None:
     Base.metadata.create_all(bind=engine)
     queue = await consumer.connect()
     await queue.consume(handle_message, no_ack=False)
-    logger.info("Consuming queue '%s'", settings.booking_queue)
+    logger.info("consuming_queue", extra={"queue": settings.booking_queue})
 
     try:
         await asyncio.Future()
     finally:
         await consumer.close()
-        await redis_client.aclose()
 
 
 if __name__ == "__main__":

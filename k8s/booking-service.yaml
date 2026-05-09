@@ -32,7 +32,7 @@ spec:
             - name: RABBITMQ_URL
               value: amqp://guest:guest@rabbitmq:5672/
             - name: BOOKING_QUEUE
-              value: booking_queue
+              value: booking.requested
 ---
 apiVersion: v1
 kind: Service
