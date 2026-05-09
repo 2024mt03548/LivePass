@@ -1,9 +1,18 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Path, status
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
+from app.db import get_db
+from app.models import Booking
 from app.rabbitmq import RabbitMQProducer, producer
-from app.schemas import BookingAcceptedResponse, BookingMessage, BookingRequest
+from app.schemas import (
+    BookingAcceptedResponse,
+    BookingMessage,
+    BookingRequest,
+    BookingResponse,
+)
 from app.services.event_client import EventClient, event_client
 
 
@@ -16,6 +25,20 @@ def get_event_client() -> EventClient:
 
 def get_rabbitmq_producer() -> RabbitMQProducer:
     return producer
+
+
+@router.get("/users/{user_id}", response_model=list[BookingResponse])
+def list_user_bookings(
+    user_id: int = Path(..., gt=0),
+    db: Session = Depends(get_db),
+) -> list[Booking]:
+    return list(
+        db.execute(
+            select(Booking)
+            .where(Booking.user_id == user_id)
+            .order_by(Booking.created_at.desc())
+        ).scalars()
+    )
 
 
 @router.post(

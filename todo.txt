@@ -1,5 +1,3 @@
-- create a endpoint to check bookings for a user.
-
 - k8 config and setup
 - testing strategy 
 - demo recording

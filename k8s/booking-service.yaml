@@ -33,6 +33,8 @@ spec:
               value: amqp://guest:guest@rabbitmq:5672/
             - name: BOOKING_QUEUE
               value: booking.requested
+            - name: BOOKING_DATABASE_URL
+              value: postgresql://livepass:livepass@booking-postgres:5432/livepass_bookings
 ---
 apiVersion: v1
 kind: Service

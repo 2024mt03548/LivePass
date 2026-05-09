@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     event_service_url: str = "http://event-service:8000"
     rabbitmq_url: str = "amqp://guest:guest@rabbitmq:5672/"
     booking_queue: str = "booking.requested"
+    booking_database_url: str
 
     model_config = SettingsConfigDict(
         env_file=".env",
