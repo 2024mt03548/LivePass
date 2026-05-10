@@ -1,4 +1,0 @@
-- k8 config and setup
-- testing strategy 
-- demo recording
-- doc

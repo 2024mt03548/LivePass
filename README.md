@@ -1,55 +1,140 @@
 # LivePass
 
-LivePass is a mini microservices-based event ticket booking system built for a Scalable Services assignment. It demonstrates a common asynchronous booking flow using FastAPI services, PostgreSQL persistence, Redis caching, RabbitMQ messaging, Docker, and Kubernetes.
+LivePass is a small microservices-based event ticket booking system. It uses FastAPI services, PostgreSQL, Redis, RabbitMQ, Docker Compose, and Kubernetes to demonstrate an asynchronous booking flow with clear service ownership.
 
 ## Project Overview
 
-Users can browse events, submit booking requests, and have bookings processed asynchronously by a worker. The booking API validates requests against the event API before publishing a message to RabbitMQ. The worker consumes booking messages, locks the target event row, creates the booking, reduces available seats, and invalidates cached event data.
+Users can browse events, submit booking requests, and check their booking history. Booking requests are accepted immediately by the public API, processed asynchronously by a worker, and finalized only after event-service reserves inventory.
+
+The key service boundary is:
+
+- `event-service` owns events and inventory.
+- `booking-worker` owns booking writes.
+- `booking-service` owns the public booking API and reads booking history.
+- Redis is only used by event-service for public event read caching.
+- RabbitMQ is only used for `booking.requested` messages.
 
 ## Architecture
 
 ```text
 Client
   |
-  | HTTP
-  v
-booking-service
-  |
-  | REST: GET /events/{id}
+  | GET /events, GET /events/{id}
   v
 event-service ---- Redis
   |
-  | PostgreSQL
+  | owns events + inventory
   v
-postgres
+event-postgres
 
+Client
+  |
+  | POST /bookings
+  v
 booking-service
   |
-  | publish booking_queue
+  | publish booking.requested
   v
 rabbitmq
   |
-  | consume booking_queue
+  | consume booking.requested
   v
-booking-worker ---- PostgreSQL
-       |
-       | invalidate cache
-       v
-     Redis
+booking-worker
+  |
+  | POST /internal/inventory/reserve
+  v
+event-service
+  |
+  | write final booking status
+  v
+booking-postgres
+
+Client
+  |
+  | GET /bookings/users/{user_id}
+  v
+booking-service
+  |
+  | read booking history
+  v
+booking-postgres
 ```
 
 ## Services
 
 | Service | Responsibility | Local Port |
 | --- | --- | --- |
-| `event-service` | Public event read API, internal event management and inventory APIs, PostgreSQL access, Redis caching for event reads | `8001` |
-| `booking-service` | Booking request API, event validation, RabbitMQ producer | `8002` |
-| `booking-worker` | RabbitMQ consumer, transactional booking creation, seat updates, cache invalidation | none |
-| `postgres` | Stores events and bookings | `5432` |
-| `redis` | Caches event list and event details | `6379` |
-| `rabbitmq` | Booking queue broker and management UI | `5672`, `15672` |
+| `event-service` | Public event reads, internal event management, internal inventory reservation, event DB access, Redis cache management | `8001` |
+| `booking-service` | Public booking API, RabbitMQ producer, booking history reads | `8002` |
+| `booking-worker` | RabbitMQ consumer, event inventory reservation client, final booking persistence | none |
+| `event-postgres` | Stores events and inventory state | `5432` |
+| `booking-postgres` | Stores booking records and final booking status | `5433` |
+| `redis` | Caches `events:list` and `event:{id}` for event-service | `6379` |
+| `rabbitmq` | Broker for `booking.requested`; management UI on `15672` | `5672`, `15672` |
 
-## Setup With Docker Compose
+## Public APIs
+
+Event discovery:
+
+```text
+GET /events
+GET /events/{event_id}
+```
+
+Booking:
+
+```text
+POST /bookings
+GET /bookings/users/{user_id}
+```
+
+Health checks:
+
+```text
+GET /health
+```
+
+## Internal APIs
+
+Event management:
+
+```text
+POST /internal/events
+PUT /internal/events/{event_id}
+DELETE /internal/events/{event_id}
+```
+
+Inventory reservation:
+
+```text
+POST /internal/inventory/reserve
+```
+
+The inventory reservation endpoint bypasses Redis, locks the event row in PostgreSQL, validates event status and seat availability, decrements seats atomically, marks events as `SOLD_OUT` when seats reach zero, and invalidates affected Redis cache keys after a successful update.
+
+## Async Booking Flow
+
+1. Client calls `POST /bookings`.
+2. `booking-service` validates the request shape and checks event-service reachability.
+3. `booking-service` publishes a `booking.requested` message to RabbitMQ.
+4. `booking-worker` consumes the message.
+5. `booking-worker` calls `event-service` at `POST /internal/inventory/reserve`.
+6. If reservation succeeds, `booking-worker` writes a `CONFIRMED` booking.
+7. If reservation fails, `booking-worker` writes a `FAILED` booking.
+8. Client can check final status with `GET /bookings/users/{user_id}`.
+
+RabbitMQ message shape:
+
+```json
+{
+  "user_id": 101,
+  "event_id": 1,
+  "tickets": 2,
+  "requested_at": "2026-05-10T10:00:00Z"
+}
+```
+
+## Docker Compose
 
 Prerequisites:
 
@@ -99,13 +184,19 @@ Local URLs:
 - Event service: `http://localhost:8001`
 - Booking service: `http://localhost:8002`
 - RabbitMQ management UI: `http://localhost:15672`
-- RabbitMQ default login: `guest` / `guest`
+- RabbitMQ login: `guest` / `guest`
 
-## Run Locally Without Docker
+Compose builds these app images, matching the Kubernetes manifests:
 
-For normal development, Docker Compose is recommended because it starts PostgreSQL, Redis, and RabbitMQ with the correct service names.
+```text
+livepass/event-service:latest
+livepass/booking-service:latest
+livepass/booking-worker:latest
+```
 
-To run an individual service manually, install dependencies and provide environment variables from the service `.env.example`.
+## Local Development Without Docker
+
+Docker Compose is recommended because it starts PostgreSQL, Redis, and RabbitMQ with the same service names used by the containers. To run services manually, start the infrastructure dependencies first and use host-based URLs.
 
 Event service:
 
@@ -113,6 +204,13 @@ Event service:
 cd event-service
 pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8001
+```
+
+Example environment:
+
+```env
+DATABASE_URL=postgresql://livepass:livepass@localhost:5432/livepass_events
+REDIS_URL=redis://localhost:6379/0
 ```
 
 Booking service:
@@ -123,6 +221,15 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8002
 ```
 
+Example environment:
+
+```env
+EVENT_SERVICE_URL=http://localhost:8001
+RABBITMQ_URL=amqp://guest:guest@localhost:5672/
+BOOKING_QUEUE=booking.requested
+BOOKING_DATABASE_URL=postgresql://livepass:livepass@localhost:5433/livepass_bookings
+```
+
 Booking worker:
 
 ```bash
@@ -131,12 +238,12 @@ pip install -r requirements.txt
 python -m app.worker
 ```
 
-When running outside Docker, use host-based URLs in your environment, for example:
+Example environment:
 
 ```env
-DATABASE_URL=postgresql://livepass:livepass@localhost:5432/livepass_events
-REDIS_URL=redis://localhost:6379/0
+DATABASE_URL=postgresql://livepass:livepass@localhost:5433/livepass_bookings
 RABBITMQ_URL=amqp://guest:guest@localhost:5672/
+BOOKING_QUEUE=booking.requested
 EVENT_SERVICE_URL=http://localhost:8001
 ```
 
@@ -144,7 +251,7 @@ EVENT_SERVICE_URL=http://localhost:8001
 
 Kubernetes manifests are stored in `k8s/`.
 
-Apply infrastructure services first:
+Apply infrastructure first:
 
 ```bash
 kubectl apply -f k8s/postgres.yaml
@@ -160,18 +267,29 @@ kubectl apply -f k8s/booking-service.yaml
 kubectl apply -f k8s/booking-worker.yaml
 ```
 
-Or apply all manifests:
+Or apply everything:
 
 ```bash
 kubectl apply -f k8s/
 ```
 
-Check deployments and pods:
+Kubernetes resources include:
+
+- `event-service`: 2 replicas, ClusterIP
+- `booking-service`: 2 replicas, NodePort `30082`
+- `booking-worker`: 2 replicas
+- `event-postgres`: 1 replica, PVC, init ConfigMap
+- `booking-postgres`: 1 replica, PVC, init ConfigMap
+- `redis`: 1 replica
+- `rabbitmq`: 1 replica
+
+Check resources:
 
 ```bash
 kubectl get deployments
 kubectl get pods
 kubectl get services
+kubectl get pvc
 ```
 
 View logs:
@@ -182,7 +300,11 @@ kubectl logs deploy/booking-service
 kubectl logs deploy/booking-worker
 ```
 
-The `booking-service` manifest exposes a NodePort service on port `30082`.
+Access `booking-service` through the NodePort:
+
+```text
+http://<node-ip>:30082
+```
 
 For Minikube:
 
@@ -190,48 +312,19 @@ For Minikube:
 minikube service booking-service
 ```
 
-Or access it through the node IP:
-
-```bash
-kubectl get nodes -o wide
-```
-
-Then call:
-
-```text
-http://<node-ip>:30082
-```
-
-## Scaling Commands
-
-Scale event-service:
-
-```bash
-kubectl scale deployment event-service --replicas=3
-```
-
-Scale booking-service:
-
-```bash
-kubectl scale deployment booking-service --replicas=3
-```
-
-Scale booking-worker:
-
-```bash
-kubectl scale deployment booking-worker --replicas=2
-```
-
-Verify scaling:
-
-```bash
-kubectl get deployments
-kubectl get pods -l app=event-service
-kubectl get pods -l app=booking-service
-kubectl get pods -l app=booking-worker
-```
-
 ## Sample API Requests
+
+List events:
+
+```bash
+curl http://localhost:8001/events
+```
+
+Get event by ID:
+
+```bash
+curl http://localhost:8001/events/1
+```
 
 Create an event internally:
 
@@ -246,18 +339,6 @@ curl -X POST http://localhost:8001/internal/events \
     "available_seats": 100,
     "status": "active"
   }'
-```
-
-List events:
-
-```bash
-curl http://localhost:8001/events
-```
-
-Get event by ID:
-
-```bash
-curl http://localhost:8001/events/1
 ```
 
 Update an event internally:
@@ -293,8 +374,14 @@ Expected response:
 
 ```json
 {
-  "message": "Booking request accepted"
+  "message": "Booking request accepted for processing"
 }
+```
+
+Check bookings for a user:
+
+```bash
+curl http://localhost:8002/bookings/users/101
 ```
 
 Health checks:
@@ -304,12 +391,26 @@ curl http://localhost:8001/health
 curl http://localhost:8002/health
 ```
 
+## Cache Keys
+
+event-service uses Redis for public event reads:
+
+```text
+events:list
+event:{event_id}
+```
+
+These keys are invalidated after successful internal event management changes and successful inventory reservation.
+
 ## Repository Structure
 
 ```text
 LivePass/
   booking-service/
   booking-worker/
+  db/
+    booking-init/
+    event-init/
   event-service/
   k8s/
   docker-compose.yml
